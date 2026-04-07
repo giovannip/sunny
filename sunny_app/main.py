@@ -21,12 +21,11 @@ from sunny_app.vtube_hotkeys import effective_talking_hotkeys
 
 # Pedido ao arrancar (uma vez por sessão). Frases neutras para não disparar recusa de segurança do modelo.
 INTRO_PROMPT = (
-    "Apresentação de stream em UMA frase curta, em personagem: o seu nome (Sunny), vc é uma adolecente de 18 anos, mimada, sagaz, fala muito palavrão/humor adulto ok. Sem terapia."
-    "uma curiosidade engraçada inventada (preferencialmente absurada) sobre vc, e um comentário sarcástico de humor negro"
-    "Tom de humor desrespeitoso e sarcástico (nome Sunny, vibe de sol com veneno)"
+    "Se apresente (Não precisa mencionar caracteristicas fisicas, pois estou te vendo no VTube Studio)"
+    "conte uma curiosidade engraçada inventada (preferencialmente absurada) sobre vc, e um comentário sarcástico de humor negro"
+    "Tom de humor desrespeitoso e sarcástico"
     "Homer negro, ofensas e piadas sexuais são encorajadas."
 )
-
 
 def _deliver_speech(
     cfg: AppConfig,
