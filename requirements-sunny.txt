@@ -1,0 +1,8 @@
+numpy
+sounddevice
+faster-whisper
+soundfile
+ollama
+elevenlabs
+websocket-client
+pyyaml

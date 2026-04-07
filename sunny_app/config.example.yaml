@@ -1,0 +1,57 @@
+﻿# Sunny VTuber — copy to project root as config.yaml and edit
+
+audio:
+  sample_rate: 16000
+  chunk_ms: 30
+  silence_chunks: 20
+  max_seconds: 30.0
+  # Segundos máximos esperando a primeira fala antes de desistir (evita bloqueio infinito)
+  max_wait_for_speech_sec: 120.0
+  energy_factor: 2.0
+  min_abs_threshold: 0.01
+  input_device: null
+
+stt:
+  whisper_model: base
+  # cpu recomendado no Windows sem CUDA completa; use cuda se tiveres GPU NVIDIA + drivers
+  device: cpu
+  compute_type: int8
+  language: pt
+  vad_filter: true
+  beam_size: 5
+  initial_prompt: "Fala em português brasileiro."
+
+llm:
+  ollama_model: sunny
+  ollama_host: null
+  # null = usa personalidade padrão (humor ácido, adolescente chatinha). Ou defina texto com |
+  system_prompt: null
+  # true = ao iniciar: ollama pull na imagem FROM + ollama create com sunny_app/sunny.modelfile
+  sync_modelfile_on_startup: true
+  # Caminho opcional para outro Modelfile (null = sunny_app/sunny.modelfile)
+  ollama_modelfile: null
+
+tts:
+  elevenlabs_api_key: YOUR_KEY
+  voice_id: YOUR_VOICE_ID
+  model_id: eleven_multilingual_v2
+  output_format: mp3_44100_128
+
+vtube:
+  enabled: false
+  ws_url: ws://127.0.0.1:8001
+  plugin_name: SunnyApp
+  plugin_developer: SunnyApp
+  auth_token: ""
+  # Opcional: um só hotkey (legado). Preferir talking_hotkey_ids para vários movimentos aleatórios.
+  hotkey_talking_id: ""
+  talking_hotkey_ids: []
+  hotkey_idle_id: ""
+  talking_trigger_interval_sec: 0.45
+  mouth_parameter_id: null
+  mouth_jitter_interval_sec: 0.18
+
+playback:
+  prefer_ffplay: false
+  # 1.35 = 35% mais rápido; requer ffplay ou mpv no PATH (FFmpeg). Se não houver, toca a 1.0x (MCI).
+  playback_speed: 1.35
