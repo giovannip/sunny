@@ -5,3 +5,4 @@ __pycache__/
 venv/
 *.mp3
 demo/*
+.vscode/settings.json
