@@ -11,13 +11,16 @@ import yaml
 @dataclass
 class AudioConfig:
     sample_rate: int = 16000
-    chunk_ms: int = 30
-    silence_chunks: int = 20
+    # Blocos maiores (~100 ms) + pré-roll estáveis como no demo speech_recon.
+    chunk_ms: int = 100
+    silence_chunks: int = 10
     max_seconds: float = 30.0
     # Stop waiting for first speech after this many seconds (avoids infinite silence).
     max_wait_for_speech_sec: float = 120.0
-    energy_factor: float = 2.0
-    min_abs_threshold: float = 0.01
+    energy_factor: float = 1.75
+    min_abs_threshold: float = 0.004
+    # Inclui áudio antes de cruzar o limiar (evita cortar a primeira sílaba).
+    preroll_chunks: int = 5
     input_device: Optional[int] = None
 
 
@@ -26,23 +29,34 @@ class SttConfig:
     whisper_model: str = "base"
     # cpu = sem CUDA (evita erro cublas64_*.dll se a GPU/CUDA não estiverem corretas). Use cuda se tiveres drivers NVIDIA.
     device: str = "cpu"
-    compute_type: str = "int8"
+    compute_type: str = "default"
     language: Optional[str] = None
-    vad_filter: bool = True
-    beam_size: int = 5
+    # Com segmentação por silêncio na captura, VAD interno costuma piorar (igual ao demo).
+    vad_filter: bool = False
+    beam_size: int = 10
+    patience: float = 1.1
+    best_of: int = 5
+    repetition_penalty: float = 1.05
+    no_repeat_ngram_size: int = 0
+    condition_on_previous_text: bool = False
+    # null = texto padrão pt-BR (demo speech_recon)
     initial_prompt: Optional[str] = None
+    # null = lista curta pt-BR para viés léxico (faster-whisper)
+    hotwords: Optional[str] = None
 
 
 @dataclass
 class LlmConfig:
-    ollama_model: str = "sunny"
-    ollama_host: Optional[str] = None
-    # Personalidade (enviada ao Ollama como system prompt). null = usa o texto padrão em llm.py
+    # ollama | openai_compatible (API /v1/chat/completions)
+    provider: str = "ollama"
+    model: str = "sunny"
+    # Ollama: host opcional, ex. http://127.0.0.1:11434 (null = cliente padrão / OLLAMA_HOST).
+    # openai_compatible: URL base obrigatória, ex. https://api.openai.com/v1 ou http://localhost:11434/v1
+    api_base: Optional[str] = None
+    # Só para openai_compatible; se vazio, usa env OPENAI_API_KEY
+    api_key: Optional[str] = None
+    # Opcional: mensagem de sistema em cada pedido (além do que o modelo já traz no template).
     system_prompt: Optional[str] = None
-    # Ao iniciar: ollama pull na imagem FROM + ollama create a partir de sunny_app/sunny.modelfile
-    sync_modelfile_on_startup: bool = True
-    # Caminho opcional para outro Modelfile (absoluto ou relativo ao cwd)
-    ollama_modelfile: Optional[str] = None
 
 
 @dataclass
@@ -118,7 +132,19 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
 
     audio = _merge_dataclass(AudioConfig, raw.get("audio") or {})
     stt = _merge_dataclass(SttConfig, raw.get("stt") or {})
-    llm = _merge_dataclass(LlmConfig, raw.get("llm") or {})
+    llm_raw = dict(raw.get("llm") or {})
+    if "model" not in llm_raw and "ollama_model" in llm_raw:
+        llm_raw["model"] = llm_raw.get("ollama_model")
+    if "api_base" not in llm_raw and "ollama_host" in llm_raw:
+        llm_raw["api_base"] = llm_raw.get("ollama_host")
+    for _obsolete in (
+        "sync_modelfile_on_startup",
+        "ollama_modelfile",
+        "ollama_model",
+        "ollama_host",
+    ):
+        llm_raw.pop(_obsolete, None)
+    llm = _merge_dataclass(LlmConfig, llm_raw)
     tts = _merge_dataclass(TtsConfig, raw.get("tts") or {})
     vtube = _merge_dataclass(VTubeConfig, raw.get("vtube") or {})
     if vtube.talking_hotkey_ids is None:

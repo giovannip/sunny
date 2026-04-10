@@ -2,34 +2,43 @@
 
 audio:
   sample_rate: 16000
-  chunk_ms: 30
-  silence_chunks: 20
+  # ~100 ms por bloco + pré-roll: alinhado a demo/speech_recon/speechRecognitionDemo.py
+  chunk_ms: 100
+  silence_chunks: 10
   max_seconds: 30.0
   # Segundos máximos esperando a primeira fala antes de desistir (evita bloqueio infinito)
   max_wait_for_speech_sec: 120.0
-  energy_factor: 2.0
-  min_abs_threshold: 0.01
+  energy_factor: 1.75
+  min_abs_threshold: 0.004
+  preroll_chunks: 5
   input_device: null
 
 stt:
+  # small ou medium costumam melhorar pt-BR (mais pesado)
   whisper_model: base
   # cpu recomendado no Windows sem CUDA completa; use cuda se tiveres GPU NVIDIA + drivers
   device: cpu
-  compute_type: int8
+  compute_type: default
   language: pt
-  vad_filter: true
-  beam_size: 5
-  initial_prompt: "Fala em português brasileiro."
+  vad_filter: false
+  beam_size: 10
+  patience: 1.1
+  best_of: 5
+  repetition_penalty: 1.05
+  no_repeat_ngram_size: 0
+  condition_on_previous_text: false
+  initial_prompt: null
+  hotwords: null
 
 llm:
-  ollama_model: sunny
-  ollama_host: null
-  # null = usa personalidade padrão (humor ácido, adolescente chatinha). Ou defina texto com |
+  # ollama | openai_compatible
+  provider: ollama
+  model: sunny
+  # Ollama: opcional (ex. http://127.0.0.1:11434). openai_compatible: obrigatório (ex. https://api.openai.com/v1)
+  api_base: null
+  # Só openai_compatible; se null, usa env OPENAI_API_KEY
+  api_key: null
   system_prompt: null
-  # true = ao iniciar: ollama pull na imagem FROM + ollama create com sunny_app/sunny.modelfile
-  sync_modelfile_on_startup: true
-  # Caminho opcional para outro Modelfile (null = sunny_app/sunny.modelfile)
-  ollama_modelfile: null
 
 tts:
   elevenlabs_api_key: YOUR_KEY

@@ -1,98 +1,51 @@
 from __future__ import annotations
 
 import argparse
-import os
-import ollama
-import re
+import json
 import sys
 import tempfile
-import threading
 import traceback
 from pathlib import Path
-
-from sunny_app.config import LlmConfig
 
 from sunny_app.audio_capture import record_phrase
 from sunny_app.config import AppConfig, load_config
 
-from sunny_app.ollama_sync import sync_ollama_model
+from sunny_app.llm import generate_reply
 from sunny_app.playback import play_mp3_file
 from sunny_app.stt import WhisperSTT
 from sunny_app.tts import synthesize
+
 from sunny_app.vtube_client import VTubeClient
 
-_VTUBE_HOTKEY_32 = re.compile(r"^[0-9a-fA-F]{32}$")
-_VTUBE_HOTKEY_UUID = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
-# Zero-width / BOM que alguns modelos colocam após "|" e deixam TTS/terminal "vazios".
-_INVISIBLE_TAIL_CHARS = "\u200b\u200c\u200d\u2060\ufeff"
+# Hotkey "Remove Expressions" — limpa expressões antes de aplicar as do JSON.
+_VTUBE_REMOVE_EXPRESSIONS_HOTKEY_ID = "9b01a4b29d1247aaa165c6c7232a436a"
 
-message_history = []
-
-def generate_reply(cfg: LlmConfig, user_text: str) -> str:
-    print(f"🤖 Generating reply for: {user_text}")
-
-
-    message_history.append({'role': 'user', 'content': user_text})
-
-    # 3. Envia o histórico COMPLETO para o Ollama
-    response = ollama.chat(model=cfg.ollama_model, messages=message_history)
-
-    # 4. Pega a resposta do modelo
-    llm_reply = response['message']['content']
-    print(f"🤖 LLM reply: {llm_reply}")
-
-    # 5. Faz o APPEND da resposta da IA no histórico para a próxima rodada
-    message_history.append({'role': 'assistant', 'content': llm_reply})
-
-    print(f"🤖 LLM reply: {llm_reply}")
-    return llm_reply
-
-def _is_vtube_hotkey_id(s: str) -> bool:
-    t = s.strip()
-    return bool(_VTUBE_HOTKEY_32.match(t) or _VTUBE_HOTKEY_UUID.match(t))
-
-
-def _normalize_hotkey_head(head: str) -> str:
-    """Aceita ids como no modelfile ou com colchetes literais «<uuid>»."""
-    t = head.strip().strip("<>").strip()
-    return t
-
-
-def _normalize_speech_tail(tail: str) -> str:
-    t = tail.strip()
-    for ch in _INVISIBLE_TAIL_CHARS:
-        t = t.replace(ch, "")
-    return t.strip()
-
-
-def _split_llm_reply(reply: str) -> tuple[str, str | None]:
-    """Se `hotkeyId|texto` com id VTube válido, retorna (texto para TTS, hotkey). Caso contrário (reply inteiro, None)."""
-    raw = (reply or "").strip()
-    if "|" not in raw:
-        return raw, None
-    head, _, tail = raw.partition("|")
-    head = _normalize_hotkey_head(head)
-    tail = _normalize_speech_tail(tail)
-    if not tail or not _is_vtube_hotkey_id(head):
-        return raw, None
-    return tail, head
-
-
-def _speech_for_display(reply: str) -> str:
-    """Texto legível para o terminal (mesmo que o TTS quando o parse é válido)."""
-    tts, _ = _split_llm_reply(reply)
-    if tts:
-        return tts
-    r = (reply or "").strip()
-    return r if r else "(sem texto — o modelo não devolveu texto falável)"
+def _print_capture_report(diag: dict) -> None:
+    if diag.get("timeout_wait"):
+        return
+    print(
+        f"  Captura: {diag['duration_sec']:.2f}s | "
+        f"pico RMS {diag['peak_rms']:.5f} | limiar {diag['threshold']:.5f} | "
+        f"pico onda {diag['peak_abs']:.4f}",
+        flush=True,
+    )
+    if not diag.get("saw_above_threshold"):
+        print(
+            "  Aviso: nenhum trecho passou do limiar; o áudio pode estar muito baixo.",
+            flush=True,
+        )
+    elif diag["peak_abs"] < 0.02:
+        print(
+            "  Aviso: sinal baixo — suba o ganho do microfone ou aproxime-se.",
+            flush=True,
+        )
 
 # Pedido ao arrancar (uma vez por sessão). Frases neutras para não disparar recusa de segurança do modelo.
 INTRO_PROMPT = (
     "Se apresente (Não precisa mencionar caracteristicas fisicas, pois estou te vendo no VTube Studio)"
     "conte uma curiosidade engraçada inventada (preferencialmente absurada) sobre vc"
     "[respostas CURTAS, apenas uma frase]"
+    "Responda APENAS com o objeto JSON (expressions, annimation, message) conforme as regras do sistema."
 )
 
 def _deliver_speech(
@@ -100,34 +53,53 @@ def _deliver_speech(
     vtube: VTubeClient | None,
     reply: str,
 ) -> None:
-    """TTS, reprodução e hotkey VTube (pose do LLM em loop durante o áudio quando id|texto)."""
-    tts_text, llm_hotkey = _split_llm_reply(reply)
+    """JSON do LLM: remove expressões (paralelo ao TTS), aplica expressões, animação em loop no áudio."""
+
+    print(f"_deliver_speech: reply: {reply}", flush=True)
+
+    reply_obj = None
+    # Parse reply from JSON
+    try:
+        reply_obj = json.loads(reply)
+    except Exception as e:
+        print(f"Erro ao decodificar resposta do modelo: {e}\nResposta recebida: {reply!r}", flush=True)
+        return
+
+    expression_hotkeys = reply_obj.get("expressions", [])
+    animation_hotkey = reply_obj.get("annimation", None)
+    message = reply_obj.get("message", "")
+
+    print(f"_deliver_speech: expression_hotkeys: {expression_hotkeys}", flush=True)
+    print(f"_deliver_speech: animation_hotkey: {animation_hotkey}", flush=True)
+    print(f"_deliver_speech: message: {message}", flush=True)
+
+    tts_text = message.strip()
+    if not tts_text:
+        print(
+            "Aviso: campo message vazio ou resposta não-JSON — nada a falar. "
+            "Confira se o modelo devolve JSON válido com message.",
+            flush=True,
+        )
+        return
+
+    print(f"🤖 {tts_text}", flush=True)
 
     mp3_bytes = synthesize(cfg.tts, tts_text)
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
         tmp.write(mp3_bytes)
         tmp_path = Path(tmp.name)
 
-    stop_event = threading.Event()
-    workers: list[threading.Thread] = []
+    if vtube is not None:
+        print(f"🤖 remove expressions: {_VTUBE_REMOVE_EXPRESSIONS_HOTKEY_ID}", flush=True)
+        vtube.trigger_hotkey(_VTUBE_REMOVE_EXPRESSIONS_HOTKEY_ID)
 
-    if vtube is not None and llm_hotkey:
-        vtube_client = vtube
-        hotkey_id = llm_hotkey
+        for hid in expression_hotkeys:
+            print(f"🤖 expression hotkey: {hid}", flush=True)
+            vtube.trigger_hotkey(hid)
 
-        def _llm_hotkey_loop() -> None:
-            interval = max(0.05, float(cfg.vtube.talking_trigger_interval_sec))
-            while not stop_event.is_set():
-                try:
-                    vtube_client.trigger_hotkey(hotkey_id)
-                except Exception as exc:
-                    print(f"🤖 VTube hotkey (LLM): {exc}", flush=True)
-                if stop_event.wait(timeout=interval):
-                    break
-
-        t = threading.Thread(target=_llm_hotkey_loop, name="vtube-llm-hotkey-loop", daemon=True)
-        workers.append(t)
-        t.start()
+        if animation_hotkey:
+            print(f"🤖 animation hotkey: {animation_hotkey}", flush=True)
+            vtube.trigger_hotkey(animation_hotkey)
 
     try:
         play_mp3_file(
@@ -135,20 +107,17 @@ def _deliver_speech(
             cfg.playback.prefer_ffplay,
             cfg.playback.playback_speed,
         )
+    except Exception as e:
+        print(f"🤖_deliver_speech: error: {e}", flush=True)
     finally:
-        stop_event.set()
-        for w in workers:
-            w.join(timeout=10.0)
+        print(f"🤖_deliver_speech: finally", flush=True)
+        vtube.trigger_hotkey(_VTUBE_REMOVE_EXPRESSIONS_HOTKEY_ID)
         try:
+            print(f"🤖_deliver_speech: unlinking tmp_path: {tmp_path}", flush=True)
             tmp_path.unlink(missing_ok=True)
         except OSError:
+            print(f"🤖_deliver_speech: error: {e}", flush=True)
             pass
-
-    if vtube is not None and cfg.vtube.hotkey_idle_id:
-        try:
-            vtube.trigger_hotkey(cfg.vtube.hotkey_idle_id)
-        except Exception as exc:
-            print(f"VTube idle hotkey: {exc}")
 
 
 def main() -> None:
@@ -159,23 +128,17 @@ def main() -> None:
         default=None,
         help="Path to config YAML (default: cwd/config.yaml or SUNNY_CONFIG)",
     )
-    parser.add_argument(
-        "--skip-ollama-sync",
-        action="store_true",
-        help="Não executar ollama pull/create (equivale a SUNNY_SKIP_OLLAMA_SYNC=1)",
-    )
     args = parser.parse_args()
-    if args.skip_ollama_sync:
-        os.environ["SUNNY_SKIP_OLLAMA_SYNC"] = "1"
 
     print("Sunny — carregando configuração…", flush=True)
     cfg = load_config(args.config)
 
-    sync_ollama_model(cfg)
-
     mic = cfg.audio.input_device
     mic_note = f"microfone [{mic}]" if mic is not None else "microfone (dispositivo padrão)"
-    print(f"  OK — Ollama: «{cfg.llm.ollama_model}», {mic_note}", flush=True)
+    print(
+        f"  OK — LLM ({cfg.llm.provider}): «{cfg.llm.model}», {mic_note}",
+        flush=True,
+    )
 
     stt = WhisperSTT(cfg.stt)
     vtube: VTubeClient | None = None
@@ -185,14 +148,14 @@ def main() -> None:
         vtube.connect()
         print("  VTube Studio conectado.", flush=True)
         print(
-            "  Poses durante a fala: hotkey escolhido pelo modelo (formato hotkeyId|texto).",
+            "  VTube: JSON com expressions + annimation (loop na fala) + message; "
+            "remove expressões e TTS em paralelo antes de aplicar expressões.",
             flush=True,
         )
 
     print("\nApresentação automática (nome + curiosidade)…", flush=True)
     try:
         intro_reply = generate_reply(cfg.llm, INTRO_PROMPT)
-        print(f"Sunny intro_reply: {_speech_for_display(intro_reply)}", flush=True)
         _deliver_speech(cfg, vtube, intro_reply)
     except Exception as exc:
         print(f"Aviso: apresentação inicial falhou ({exc}). O app segue em modo escuta.\n", flush=True)
@@ -207,15 +170,18 @@ def main() -> None:
     try:
         while True:
             print("Ouvindo…", flush=True)
-            audio = record_phrase(cfg.audio.input_device, cfg.audio)
+            audio, cap_diag = record_phrase(cfg.audio.input_device, cfg.audio)
             if audio.size == 0:
                 print(
                     "Sem áudio: passou o tempo esperando fala ou o nível ficou "
-                    "sempre abaixo do limiar. Aumente o ganho do microfone ou reduza "
-                    "`audio.min_abs_threshold` / `energy_factor` no config.\n",
+                    "sempre abaixo do limiar. Aumente o ganho do microfone, confira "
+                    "`audio.input_device`, ou reduza `min_abs_threshold` / "
+                    "`energy_factor`; `preroll_chunks` e `chunk_ms` (como no demo "
+                    "speech_recon) ajudam a não cortar o início da frase.\n",
                     flush=True,
                 )
                 continue
+            _print_capture_report(cap_diag)
             print("Transcrevendo…", flush=True)
             user_text = stt.transcribe(audio, sampling_rate=cfg.audio.sample_rate)
             if not user_text.strip():
@@ -223,8 +189,12 @@ def main() -> None:
                 continue
 
             print(f"Você: {user_text}")
-            reply = generate_reply(cfg.llm, user_text + "[respostas CURTAS, apenas uma frase]")
-            print(f"Sunny: {_speech_for_display(reply)}")
+            reply = generate_reply(
+                cfg.llm,
+                user_text
+                + "[respostas CURTAS, apenas uma frase]"
+                + " Responda APENAS JSON: expressions, annimation, message.",
+            )
             _deliver_speech(cfg, vtube, reply)
 
     except KeyboardInterrupt:

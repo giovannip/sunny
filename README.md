@@ -11,7 +11,7 @@ A Python project that implements a virtual assistant named **Sunny**, designed t
 
 ## Sunny app (`sunny_app/`)
 
-End-to-end loop: microphone → [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) → [Ollama](https://ollama.com) → [ElevenLabs](https://elevenlabs.io) → MP3 playback, with optional VTube Studio hotkeys while audio plays.
+End-to-end loop: microphone → [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) → LLM (`llm.provider`: default [Ollama](https://ollama.com), or any OpenAI-compatible `/v1/chat/completions` API) → [ElevenLabs](https://elevenlabs.io) → MP3 playback, with optional VTube Studio hotkeys while audio plays.
 
 ### Prerequisites
 
@@ -30,21 +30,22 @@ py -m pip install -r requirements-sunny.txt
 
 Do not put real API keys, VTube tokens, or personal file paths in this repository or in copies of these docs you publish (issues, gists, etc.). The YAML keys named above are configuration field names only, not secret values.
 
-### Ollama and the Sunny model
+### LLM backend and the Sunny model (Ollama)
 
-The model is defined in [`sunny_app/sunny.modelfile`](sunny_app/sunny.modelfile).
+The persona template for the default Ollama flow lives in [`sunny_app/sunny.modelfile`](sunny_app/sunny.modelfile). After you edit it, recreate the local model yourself, for example:
 
-With `llm.sync_modelfile_on_startup: true` (default), starting the app runs `ollama pull` on the `FROM` image and `ollama create` so the model named in `llm.ollama_model` matches the Modelfile.
+```bash
+ollama pull <base-from-FROM-line>
+ollama create sunny -f sunny_app/sunny.modelfile
+```
 
-To skip sync (faster startup):
+Use `llm.provider: ollama`, `llm.model: sunny` (or whatever name you passed to `ollama create`), and optional `llm.api_base` if Ollama is not on the default host.
 
-- Set `llm.sync_modelfile_on_startup: false`, or  
-- Set environment variable `SUNNY_SKIP_OLLAMA_SYNC=1`, or  
-- Pass `--skip-ollama-sync`.
+For other APIs, set `llm.provider: openai_compatible`, `llm.api_base` (e.g. `https://api.openai.com/v1` or Ollama’s OpenAI endpoint `http://localhost:11434/v1`), `llm.model`, and `llm.api_key` (or `OPENAI_API_KEY`).
 
 ### Services
 
-- **Ollama** must be running with the model configured in `llm.ollama_model` (e.g. `sunny`). Runtime personality comes from `llm.system_prompt`: `null` uses the built-in default; override it in YAML if you want.
+- **LLM**: with `provider: ollama`, Ollama must be running and the name in `llm.model` must exist. Optional `llm.system_prompt` adds an extra system message on every request.
 - If `vtube.enabled` is true, open **VTube Studio** with the WebSocket API enabled.
 
 ### Run
@@ -74,18 +75,3 @@ On Unix-like systems, use `export SUNNY_CONFIG=/path/to/config.yaml` instead of 
 
 On **Windows**, playback uses **MCI** by default (`playback.prefer_ffplay: false`). On other platforms, install **`ffplay`** (FFmpeg) or **`mpv`** for blocking playback until the file finishes.
 
-### Sync Ollama model manually (Modelfile update)
-
-From a shell whose working directory is the repository root, with `config.yaml` in place:
-
-```bash
-py -c "from sunny_app.config import load_config; from sunny_app.ollama_sync import sync_ollama_model; sync_ollama_model(load_config())"
-```
-
-PowerShell example using placeholder paths only:
-
-```powershell
-Set-Location "C:\path\to\your\VTuberAI-clone"
-$env:SUNNY_CONFIG = "C:\path\to\your\VTuberAI-clone\config.yaml"
-py -c "from sunny_app.config import load_config; from sunny_app.ollama_sync import sync_ollama_model; sync_ollama_model(load_config())"
-```
